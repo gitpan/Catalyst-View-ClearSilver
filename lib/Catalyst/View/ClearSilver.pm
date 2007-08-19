@@ -1,72 +1,87 @@
 package Catalyst::View::ClearSilver;
 use strict;
 use warnings;
-use base qw(Catalyst::Base);
+use base qw(Catalyst::View::Templated);
 
+use Data::Structure::Util qw/unbless circular_off/;
 use ClearSilver;
+use Class::C3;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
-sub process {
-    my ( $self, $c ) = @_;
-    my $template = $c->stash->{template}
-        || sprintf('%s%s', $c->action, $self->config->{template_extension} || '.cs');
-    unless ($template) {
-        $c->log->debug('No template specified for rendering') if $c->debug;
-        return 0;
+sub new {
+    my $self = shift;
+    $self = $self->next::method(@_);
+    
+    # backcompat config options
+    $self->{TEMPLATE_EXTENSION} ||= $self->{template_extension} || '.cs';
+    $self->{INCLUDE_HDF} ||= $self->{hdfpaths};
+    if (ref $self->{INCLUDE_HDF} ne 'ARRAY') {
+        $self->{INCLUDE_HDF} = [$self->{INCLUDE_HDF}];
     }
-    $c->log->debug(qq/Rendering template "$template"/) if $c->debug;
-    my $hdf = $self->_create_hdf($c);
-    unless ($hdf) {
-        $c->log->error(qq/Couldn't create HDF Dataset/);
-        return 0;
-    }
+    unshift @{$self->{INCLUDE_PATH}}, $self->{loadpaths};
+
+    die "Cannot pass CATALYST_VAR; it's ignored" 
+      if $self->{CATALYST_VAR} ne 'c';
+    
+    return $self;
+}
+
+sub _render {
+    my ( $self, $template, $stash, $args ) = @_;
+    
+    delete $stash->{$self->{CATALYST_VAR}};
+    
+    my $hdf = $self->_create_hdf($stash);
+    die qq/Couldn't create HDF dataset/ unless $hdf;
+    
     my $cs = ClearSilver::CS->new($hdf);
     unless ($cs->parseFile($template)) {
-        $c->log->error(qq/Couldn't render template "$template"/);
-        return 0;
+        die qq/Failed to parse template/;
     }
-    my $output = $cs->render;
-    unless ( $c->response->content_type ) {
-        $c->response->content_type('text/html; charset=utf8');
-    }
-    $c->response->body($output);
-    return 1;
+    
+    return $cs->render;
 }
 
 sub _create_hdf {
-    my ( $self, $c ) = @_;
+    my ( $self, $stash ) = @_;
+
     my $hdf = ClearSilver::HDF->new;
-    for my $path (@{$self->config->{hdfpaths}}) {
-        my $ret = $hdf->readFile($path);
-        return unless $ret;
+    for my $path (@{$self->{INCLUDE_HDF}||[]}) {
+        $hdf->readFile($path) or die 'Failed to read HDF $path';
     }
-    my $loadpaths = $self->config->{loadpaths};
-    my $root = $c->config->{root};
-    push @{$loadpaths}, "$root";
+    
+    my $loadpaths = $self->{INCLUDE_PATH};
     _hdf_setValue($hdf, 'hdf.loadpaths', $loadpaths);
-    while (my ($key, $val) = each %{$c->stash}) {
+
+    $stash = unbless($stash);    
+    while (my ($key, $val) = each %$stash) {
         _hdf_setValue($hdf, $key, $val);
     }
-    $hdf;
+    
+    return $hdf;
 }
 
 sub _hdf_setValue {
     my ($hdf, $key, $val) = @_;
+
     if (ref $val eq 'ARRAY') {
         my $index = 0;
         for my $v (@$val) {
             _hdf_setValue($hdf, "$key.$index", $v);
             $index++;
         }
-    } elsif (ref $val eq 'HASH') {
+    } 
+    elsif (ref $val eq 'HASH') {
         while (my ($k, $v) = each %$val) {
             _hdf_setValue($hdf, "$key.$k", $v);
         }
-    } elsif (ref $val eq 'SCALAR') {
+    } 
+    elsif (ref $val eq 'SCALAR') {
         _hdf_setValue($hdf, $key, $$val);
-    } elsif (ref $val eq '') {
-        $hdf->setValue($key, $val);
+    } 
+    elsif (defined $val) {
+        $hdf->setValue($key, "$val");
     }
 }
 
@@ -79,30 +94,47 @@ Catalyst::View::ClearSilver - ClearSilver View Class
 
 =head1 SYNOPSIS
 
-    # use the helper
+Use the helper:
+
     create.pl view ClearSilver ClearSilver
 
-    # lib/MyApp/View/ClearSilver.pm
+Which generates C<lib/MyApp/View/ClearSilver.pm>:
+
     package MyApp::View::ClearSilver
-
     use base 'Catalyst::View::ClearSilver';
-
-    __PACKAGE__->config(
-        loadpaths => ['/path/to/loadpath', '/path/to/anotherpath'],
-        hdfpaths  => ['mydata1.hdf', 'mydata2.hdf'],
-        template_extension => '.cs',
-    );
-
     1;
 
-    # Meanwhile, maybe in an 'end' action
-    $c->forward('MyApp::View::ClearSilver');
+Configure it to your liking:
 
+    MyApp->config->{View::ClearSilver} = {
+        INCLUDE_PATH       => ['/path/to/loadpath', '/path/to/anotherpath'],
+        TEMPLATE_EXTENSION => '.cs', # .cs is the default
+        
+        # optional:
+        INCLUDE_HDF        => ['mydata1.hdf', 'mydata2.hdf'],
+    };
+
+Then use it:
+
+    $c->forward('MyApp::View::ClearSilver');
+    my $out = $c->view('ClearSilver')->render('template.cs');
+    # etc.
 
 =head1 DESCRIPTION
 
-This is the C<ClearSilver> view class. Your subclass should inherit from this
-class.
+This is the C<ClearSilver> view class.  It works like
+L<Catalyst::View::Templated|Catalyst::View::Templated>, so refer to
+that for more details on what config options and methods you can use.
+
+=head1 CAVEATS
+
+You can't call back into your application from ClearSilver, so most of
+the attributes in C<$c> will be worthless.  Be sure to pre-compute
+anything you need and put it in the stash before rendering.
+
+C<$c> will I<not> be included in your HDF at all, and hence the
+C<CATALYST_VAR> config option is ignored.  Setting it is a fatal
+error.
 
 =head1 METHODS
 
@@ -110,9 +142,21 @@ class.
 
 =item process
 
-Renders the template specified in C<< $c->stash->{template} >> or
-C<< $c->action >> (the private name of the matched action.  Calls L<render> to
-perform actual rendering. Output is stored in C<< $c->response->body >>.
+Renders the selected template and stores the result as the response body.
+
+=item render($template)
+
+Renders C<$template> and returns the result
+
+=item template([$template])
+
+Sets the template to render, or returns the template that will be
+rendered.
+
+=item new
+
+Called by Catalyst.  Sets up the config (mapping 0.01 config variables
+to 0.02 names).
 
 =back
 
@@ -120,32 +164,33 @@ perform actual rendering. Output is stored in C<< $c->response->body >>.
 
 =over 4
 
-=item loadpaths
+=item INCLUDE_PATH
 
 added to hdf.loadpaths.
 default is C<< $c->config->{root} >> only.
 
-=item hdfpaths
+=item INCLUDE_HDF
 
 HDF Dataset files into the current HDF object.
 
-=item template_extension
+=item TEMPLATE_EXTENSION
 
-a sufix to add when looking for templates bases on the C<match> method in L<Catalyst::Request>.
+a sufix to add when looking for templates bases on the C<match> method
+in L<Catalyst::Request>.
 
 =back
 
 =head1 AUTHOR
 
-Jiro Nishiguchi E<lt>jiro@cpan.orgE<gt>
+Jiro Nishiguchi C<< <jiro@cpan.org> >>
+
+Jonathan Rockway C<< <jrockway@cpan.org> >>
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself.
 
 =head1 SEE ALSO
 
-L<Catalyst>, L<ClearSilver>
+L<Catalyst>, L<Catalyst::View::Templated>, L<ClearSilver>
 
 ClearSilver Documentation:  L<http://www.clearsilver.net/docs/>
-
-=cut

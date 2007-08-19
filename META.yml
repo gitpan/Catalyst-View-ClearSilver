@@ -1,13 +1,19 @@
-# http://module-build.sourceforge.net/META-spec.html
-#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
-name:         Catalyst-View-ClearSilver
-version:      0.01
-version_from: lib/Catalyst/View/ClearSilver.pm
-installdirs:  site
-requires:
-    Catalyst:                      5.6
+--- #YAML:1.0
+name:                Catalyst-View-ClearSilver
+version:             0.02
+abstract:            ~
+license:             ~
+generated_by:        ExtUtils::MakeMaker version 6.32
+distribution_type:   module
+requires:     
+    Catalyst:                      5.7
+    Catalyst::View::Templated:     0.01
+    Class::C3:                     0
     ClearSilver:                   0
+    Data::Structure::Util:         0
     Test::More:                    0.32
-
-distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.30
+meta-spec:
+    url:     http://module-build.sourceforge.net/META-spec-v1.2.html
+    version: 1.2
+author:
+    - Jonathan Rockway <jrockway@cpan.org>
